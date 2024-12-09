@@ -64,16 +64,16 @@ const MainScreen = ({navigation, route}) => {
       });
       console.log(response);
 
-      if (!response.ok) {
+      if (response.ok) {
+        setIsConnected(true);
+      } else {
+        setIsConnected(false);
         throw new Error('Connection check failed');
       }
-
-      setIsConnected(true);
       return true;
     } catch (error) {
       console.log('Connection check failed:', error);
       await handleConnectionLost();
-      setIsConnected(false);
       return false;
     }
   }, [espIpAddress, handleConnectionLost]);
@@ -145,11 +145,15 @@ const MainScreen = ({navigation, route}) => {
     const loadConnectionDetails = async () => {
       try {
         const savedDetails = await AsyncStorage.getItem('esp32_connection');
+        const savedDoorState = await AsyncStorage.getItem('door_state');
         if (savedDetails && isMounted) {
           const {ssid, password, ipAddress} = JSON.parse(savedDetails);
           setEspIpAddress(ipAddress);
           console.log(ipAddress);
           await reconnectToNetwork(ssid, password);
+        }
+        if (savedDoorState && isMounted) {
+          setDoorState(savedDoorState);
         }
       } catch (error) {
         console.error('Error loading connection details:', error);
@@ -214,7 +218,9 @@ const MainScreen = ({navigation, route}) => {
 
       const result = await response.text();
       console.log(result);
-      setDoorState(doorState === 'closed' ? 'open' : 'closed');
+      const newDoorState = doorState === 'closed' ? 'open' : 'closed';
+      setDoorState(newDoorState);
+      await AsyncStorage.setItem('door_state', newDoorState);
     } catch (error) {
       console.error('Error:', error);
       if (error.name === 'AbortError') {
