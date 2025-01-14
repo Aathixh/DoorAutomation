@@ -96,19 +96,17 @@ const SetupComponent = () => {
 
   const checkLocationStatus = useCallback(async () => {
     try {
-      if (Platform.OS === 'android') {
-        const isEnabled = await WifiManager.isLocationEnabled();
-        if (!isEnabled) {
-          Alert.alert(
-            'Location Services Disabled',
-            'Location services must be enabled to scan for Wi-Fi networks on Android devices.',
-            [
-              {text: 'Cancel', style: 'cancel'},
-              {text: 'Open Settings', onPress: () => Linking.openSettings()},
-            ],
-          );
-          return false;
-        }
+      const isEnabled = await WifiManager.isEnabled();
+      if (!isEnabled) {
+        Alert.alert(
+          'Location Services Disabled',
+          'Location services must be enabled to scan for Wi-Fi networks on Android devices.',
+          [
+            {text: 'Cancel', style: 'cancel'},
+            {text: 'Open Settings', onPress: () => Linking.openSettings()},
+          ],
+        );
+        return false;
       }
       return true;
     } catch (error) {
@@ -122,6 +120,7 @@ const SetupComponent = () => {
       setIsInitializing(true);
       try {
         const locationGranted = await requestLocationPermission();
+        console.log(locationGranted);
         if (!locationGranted) {
           Alert.alert(
             'Permission Required',
@@ -167,32 +166,59 @@ const SetupComponent = () => {
   const requestLocationPermission = useCallback(async () => {
     try {
       if (Platform.OS === 'android') {
-        const granted = await PermissionsAndroid.requestMultiple(
-          [
-            PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-            PermissionsAndroid.PERMISSIONS.CHANGE_WIFI_STATE,
-            PermissionsAndroid.PERMISSIONS.ACCESS_WIFI_STATE,
-          ],
-          {
-            title: 'Location Permission',
-            message:
-              'We need access to your location to scan for Wi-Fi networks.',
-            buttonNeutral: 'Ask Me Later',
-            buttonNegative: 'Cancel',
-            buttonPositive: 'OK',
-          },
-        );
+        const permissions = [
+          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+          PermissionsAndroid.PERMISSIONS.ACCESS_COARSE_LOCATION,
+        ];
+        console.log('Requesting permissions:', permissions);
+
+        const granted = await PermissionsAndroid.requestMultiple(permissions, {
+          title: 'Location Permission',
+          message:
+            'We need access to your location to scan for Wi-Fi networks.',
+          buttonNeutral: 'Ask Me Later',
+          buttonNegative: 'Cancel',
+          buttonPositive: 'OK',
+        });
+
+        console.log('Permissions granted:', granted);
+
         const allGranted = Object.values(granted).every(
           permission => permission === PermissionsAndroid.RESULTS.GRANTED,
         );
-        return allGranted;
+
+        if (!allGranted) {
+          if (navigation.isFocused()) {
+            Alert.alert(
+              'Permission Denied',
+              'Location permission is required to scan for Wi-Fi networks. Please grant permission in app settings.',
+              [
+                {text: 'Cancel', style: 'cancel'},
+                {text: 'Open Settings', onPress: () => Linking.openSettings()},
+              ],
+            );
+          }
+          return false;
+        }
+
+        return true;
       }
-      return true;
     } catch (err) {
+      console.log('Error in requestLocationPermission', err);
+      if (navigation.isFocused()) {
+        Alert.alert(
+          'Permission Error',
+          'An error occurred while requesting location permission. Please try again.',
+          [
+            {text: 'Cancel', style: 'cancel'},
+            {text: 'Retry', onPress: requestLocationPermission},
+          ],
+        );
+      }
       console.warn(err);
       return false;
     }
-  }, []);
+  }, [navigation]);
 
   const enableWifi = useCallback(async () => {
     try {
@@ -296,33 +322,29 @@ const SetupComponent = () => {
     }
   }, []);
 
-  const waitForESP32Connection = useCallback(async ipAddress => {
-    const url = `http://${ipAddress}/ping`;
-    console.log('Waiting for ESP32 connection:', url);
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_DURATION);
+  // const waitForESP32Connection = useCallback(async ipAddress => {
+  //   const url = `http://${ipAddress}/ping`;
+  //   console.log('Waiting for ESP32 connection:', url);
+  //   const controller = new AbortController();
+  //   const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_DURATION);
 
-    try {
-      const response = await fetch(url, {
-        method: 'GET',
-        headers: {
-          Accept: 'text/plain',
-        },
-        signal: controller.signal,
-      });
-      console.log('ping: ', await response.text());
-      clearTimeout(timeoutId);
+  //   try {
+  //     const response = await fetch(url, {
+  //       method: 'GET',
+  //       headers: {
+  //         Accept: 'text/plain',
+  //       },
+  //       signal: controller.signal,
+  //     });
+  //     console.log('ping: ', await response.text());
+  //     clearTimeout(timeoutId);
 
-      if (response.ok) {
-        return true;
-      } else {
-        throw new Error('ESP32 not connected to home Wi-Fi');
-      }
-    } catch (error) {
-      console.error('Error waiting for ESP32 connection:', error);
-      return false;
-    }
-  }, []);
+  //     return response.ok;
+  //   } catch (error) {
+  //     console.error('Error waiting for ESP32 connection:', error);
+  //     return false;
+  //   }
+  // }, []);
 
   const sendCredentialsToESP32 = useCallback(async () => {
     if (!homeNetwork || !homePassword) {
@@ -376,37 +398,23 @@ const SetupComponent = () => {
             onPress: async () => {
               try {
                 // Reconnect app to home Wi-Fi
-                await WifiManager.connectToProtectedSSID(
-                  homeNetwork.SSID,
-                  homePassword,
-                  false,
-                  false,
-                );
+                // await WifiManager.connectToProtectedSSID(
+                //   homeNetwork.SSID,
+                //   homePassword,
+                //   false,
+                //   false,
+                // );
                 // Verify connection to home Wi-Fi
-                const connectedSSID = await WifiManager.getCurrentWifiSSID();
-                if (connectedSSID === homeNetwork.SSID) {
-                  // Wait for ESP32 to connect to home Wi-Fi
-                  const isConnected = await waitForESP32Connection(
-                    newIpAddress,
-                  );
-                  if (isConnected) {
-                    // Navigate to Main screen
-                    navigation.navigate('Main', {
-                      espIpAddress: newIpAddress,
-                      ssid: homeNetwork.SSID,
-                      password: homePassword,
-                    });
-                  } else {
-                    Alert.alert(
-                      'Connection Error',
-                      'Failed to connect to ESP32 on home Wi-Fi. Please try again.',
-                    );
-                  }
-                } else {
-                  throw new Error('Failed to reconnect to home Wi-Fi');
-                }
+
+                setIsConnectedToESP32(true);
+                // Navigate to Main screen
+                navigation.navigate('Main', {
+                  espIpAddress: newIpAddress,
+                  ssid: homeNetwork.SSID,
+                  password: homePassword,
+                });
               } catch (error) {
-                console.error('Error sending credentials to ESP32:', error);
+                console.error('Reconnection error', error);
                 Alert.alert(
                   'Connection Error',
                   'Failed to reconnect to home Wi-Fi. Please try again.',
@@ -420,49 +428,10 @@ const SetupComponent = () => {
       }
     } catch (error) {
       console.error('Error sending credentials to ESP32:', error);
-
-      if (responseText && responseText.includes('Credentials received')) {
-        const ipAddressMatch = responseText.match(/\s*(\d+\.\d+\.\d+\.\d+)/);
-        Alert.alert('Success', 'Credentials likely sent successfully', [
-          {
-            text: 'OK',
-            onPress: async () => {
-              // Wait for ESP32 to connect to home Wi-Fi
-              const isConnected = await waitForESP32Connection();
-              if (isConnected) {
-                // Reconnect app to home Wi-Fi
-                await WifiManager.connectToProtectedSSID(
-                  homeNetwork.SSID,
-                  homePassword,
-                  false,
-                  false,
-                );
-
-                // Navigate to Main screen
-                navigation.navigate('Main', {
-                  espIpAddress: ipAddressMatch[1],
-                  ssid: homeNetwork.SSID,
-                  password: homePassword,
-                });
-              } else {
-                Alert.alert(
-                  'Connection Error',
-                  'Failed to connect to ESP32 on home Wi-Fi. Please try again.',
-                );
-              }
-            },
-          },
-        ]);
-      } else {
-        Alert.alert('Connection Error', 'Failed to send credentials', [
-          {text: 'Cancel', style: 'cancel'},
-          {text: 'Try Again', onPress: sendCredentialsToESP32},
-        ]);
-      }
     } finally {
       setIsSendingCredentials(false);
     }
-  }, [homeNetwork, homePassword, navigation, waitForESP32Connection]);
+  }, [homeNetwork, homePassword, navigation]);
 
   const getSignalStrengthStyle = level => {
     if (level >= -50) {
@@ -651,6 +620,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     marginBottom: 10,
     paddingLeft: 10,
+    color: 'black',
   },
   inputDisabled: {
     backgroundColor: '#f0f0f0',

@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import WifiManager from 'react-native-wifi-reborn';
+import {openSettings} from 'react-native-permissions';
 
 const MainScreen = ({navigation, route}) => {
   const [doorState, setDoorState] = useState('closed');
@@ -19,6 +20,7 @@ const MainScreen = ({navigation, route}) => {
   const [isLoading, setIsLoading] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
   const [appState, setAppState] = useState(AppState.currentState);
+  const [isSetupComplete, setIsSetupComplete] = useState(false);
 
   // Handle app state changes
   useEffect(() => {
@@ -40,39 +42,40 @@ const MainScreen = ({navigation, route}) => {
 
   // Check connection periodically
   useEffect(() => {
-    let intervalId;
-
-    if (isConnected) {
-      intervalId = setInterval(async () => {
-        await checkConnection();
-      }, 30000); // Check every 30 seconds
+    if (isConnected || isSetupComplete) {
+      console.log('Connection is stable; skipping reconnection checks.');
+      return;
     }
 
-    return () => {
-      if (intervalId) {
+    let intervalId = setInterval(async () => {
+      const connected = await checkConnection();
+      if (connected) {
         clearInterval(intervalId);
-      } else {
-        console.log('no connection');
       }
-    };
-  }, [isConnected, checkConnection]);
+    }, 30000); // Check every 30 seconds
+
+    return () => clearInterval(intervalId);
+  }, [isConnected, isSetupComplete, checkConnection]);
 
   const checkConnection = useCallback(async () => {
     try {
+      console.log('Pinging ESP32 at:', espIpAddress);
       const response = await fetch(`http://${espIpAddress}/ping`, {
+        method: 'GET',
         timeout: 5000,
       });
-      console.log(response);
+      console.log('hi', response);
 
       if (response.ok) {
         setIsConnected(true);
+        return true;
       } else {
         setIsConnected(false);
         throw new Error('Connection check failed');
       }
-      return true;
     } catch (error) {
       console.log('Connection check failed:', error);
+      setIsConnected(false);
       await handleConnectionLost();
       return false;
     }
@@ -89,23 +92,25 @@ const MainScreen = ({navigation, route}) => {
 
   const reconnectToNetwork = useCallback(
     async (ssid, password) => {
+      if (isSetupComplete) {
+        console.log('Reconnection skipped as setup is complete.');
+        return true;
+      }
       try {
+        await WifiManager.connectToProtectedSSID(ssid, password, false, false);
         // Check current connection first
         const currentSSID = await WifiManager.getCurrentWifiSSID();
+        console.log('Current SSID:', currentSSID, 'Target SSID:', ssid);
+
         if (currentSSID === ssid) {
+          console.log('Reconnected to:', ssid);
           setIsConnected(true);
-          return;
+          setIsSetupComplete(true);
+          console.log();
+          return true;
         }
-
-        await WifiManager.connectToProtectedSSID(ssid, password, false, false);
-
-        // Verify connection
-        const connectedSSID = await WifiManager.getCurrentWifiSSID();
-        if (connectedSSID === ssid) {
-          setIsConnected(true);
-          // Verify ESP32 is reachable
-          await checkConnection();
-        }
+        // Fallback to manual selection if programmatic connection fails
+        throw new Error('Programmatic connection failed');
       } catch (error) {
         console.error('Error reconnecting to network:', error);
         Alert.alert(
@@ -115,30 +120,35 @@ const MainScreen = ({navigation, route}) => {
             {text: 'OK'},
             {
               text: 'Setup Again',
-              onPress: () => navigation.navigate('SetupComponent'),
+              onPress: () => openSettings(),
             },
           ],
         );
+        return false;
       }
     },
-    [navigation, checkConnection],
+    [isSetupComplete],
   );
 
   const handleConnectionLost = useCallback(async () => {
-    setIsConnected(false);
-    const savedDetails = await AsyncStorage.getItem('esp32_connection');
-    if (savedDetails) {
-      const {ssid, password} = JSON.parse(savedDetails);
-      try {
-        const currentSSID = await WifiManager.getCurrentWifiSSID();
-        if (currentSSID !== ssid) {
-          await reconnectToNetwork(ssid, password);
+    if (!isSetupComplete) {
+      setIsConnected(false);
+      const savedDetails = await AsyncStorage.getItem('esp32_connection');
+      if (savedDetails) {
+        const {ssid, password} = JSON.parse(savedDetails);
+        try {
+          const currentSSID = await WifiManager.getCurrentWifiSSID();
+          if (currentSSID !== ssid) {
+            await reconnectToNetwork(ssid, password);
+          }
+        } catch (error) {
+          console.error('Error handling connection loss:', error);
         }
-      } catch (error) {
-        console.error('Error handling connection loss:', error);
       }
+    } else {
+      console.log('Setup is complete; skipping reconnection attempts.');
     }
-  }, [reconnectToNetwork]);
+  }, [reconnectToNetwork, isSetupComplete]);
 
   useEffect(() => {
     let isMounted = true;
@@ -149,15 +159,17 @@ const MainScreen = ({navigation, route}) => {
         if (savedDetails && isMounted) {
           const {ssid, password, ipAddress} = JSON.parse(savedDetails);
           setEspIpAddress(ipAddress);
-          console.log(ipAddress);
-          await reconnectToNetwork(ssid, password);
+          // console.log(ipAddress);
+          const connected = await reconnectToNetwork(ssid, password);
+          if (!connected) {
+            console.log('Failed to reconnect automatically');
+          }
         }
         if (savedDoorState && isMounted) {
           setDoorState(savedDoorState);
         }
       } catch (error) {
         console.error('Error loading connection details:', error);
-        Alert.alert('Error', 'Failed to load saved connection details');
       }
     };
 
@@ -223,22 +235,19 @@ const MainScreen = ({navigation, route}) => {
       await AsyncStorage.setItem('door_state', newDoorState);
     } catch (error) {
       console.error('Error:', error);
-      if (error.name === 'AbortError') {
-        Alert.alert('Timeout', 'Request timed out. Please try again.');
-      } else {
-        // Existing error handling
-        Alert.alert(
-          'Connection Error',
-          'Failed to control door. Please verify your connection and try again.',
-          [
-            {text: 'OK'},
-            {
-              text: 'Reconnect',
-              onPress: () => navigation.navigate('SetupComponent'),
-            },
-          ],
-        );
-      }
+
+      // Existing error handling
+      Alert.alert(
+        'Connection Error',
+        'Failed to control door. Please verify your connection and try again.',
+        [
+          {text: 'OK'},
+          {
+            text: 'Reconnect',
+            onPress: () => navigation.navigate('SetupComponent'),
+          },
+        ],
+      );
       setIsConnected(false);
     } finally {
       setIsLoading(false);
